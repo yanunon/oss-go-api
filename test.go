@@ -15,5 +15,6 @@ func main(){
 	//params.Set("X-OSS-Magic", "abracadabra")
 
 	//c.SignParam("GET", "/", params)
+	c.DeleteBucket("yanunon2")
 	c.GetService()
 }

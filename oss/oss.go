@@ -22,6 +22,7 @@ type Client struct {
 	AccessID string
 	AccessKey string
 	Host string
+	HttpClient *http.Client
 }
 
 type Bucket struct {
@@ -36,15 +37,20 @@ type ValSorter struct {
 
 
 func NewClient(host, accessId, accessKey string) (*Client) {
-	client := Client{Host:host, AccessID:accessId, AccessKey:accessKey}
+	client := Client{
+		Host : host,
+		AccessID : accessId,
+		AccessKey : accessKey,
+		HttpClient : http.DefaultClient,
+	}
 	return &client
 }
 
-func (c *Client) SignParam(method, resource string, params http.Header) {
+func (c *Client) signHeader(req *http.Request) {
 	//format x-oss-
 	tmpParams := make(map[string]string)
 
-	for k, v := range params {
+	for k, v := range req.Header {
 		if strings.HasPrefix(strings.ToLower(k), "x-oss-") {
 			tmpParams[strings.ToLower(k)] = v[0]
 		}
@@ -58,30 +64,40 @@ func (c *Client) SignParam(method, resource string, params http.Header) {
 		canonicalizedOSSHeaders += valSorter.Keys[i] + ":" + valSorter.Vals[i] + "\n"
 	}
 
-	date := params.Get("Date")
-	contentType := params.Get("Content-Type")
-	contentMd5 := params.Get("Content-Md5")
+	date := req.Header.Get("Date")
+	contentType := req.Header.Get("Content-Type")
+	contentMd5 := req.Header.Get("Content-Md5")
 
-	signStr := method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders  + resource
+	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders  + req.URL.Path
 	h := hmac.New(func() hash.Hash {return sha1.New()}, []byte(c.AccessKey)) //sha1.New()
 	io.WriteString(h, signStr)
 	signedStr := base64.StdEncoding.EncodeToString(h.Sum(nil))
 	authorizationStr := "OSS " + c.AccessID + ":" + signedStr
 	fmt.Println(authorizationStr)
-	params.Set("Authorization", authorizationStr)
+	req.Header.Set("Authorization", authorizationStr)
 }
 
-func (c *Client) GetService() {
-	httpClient := http.DefaultClient
-	reqUrl := "http://" + c.Host + "/"
-	req, _ := http.NewRequest("GET", reqUrl, nil)
+func (c *Client) getRequest(method, path string, params map[string]string) (req *http.Request) {
+	reqUrl := "http://" + c.Host + path
+	req, _ = http.NewRequest(method, reqUrl, nil)
 	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	//date = "Sun, 16 Sep 2012 12:18:36 GMT"
 	req.Header.Set("Date", date)
 	req.Header.Set("Host", c.Host)
+	if params != nil {
+		for k, v := range params {
+			req.Header.Set(k, v)
+		}
+	}
 	//req.Header.Set("Authorization", c.AccessID)
-	c.SignParam("GET", "/", req.Header)
-	resp, err := httpClient.Do(req)
+	//c.SignParam("GET", "/", req.Header)
+	c.signHeader(req)
+	return
+}
+
+//Get bucket list
+func (c *Client) GetService() {
+	req := c.getRequest("GET", "/", nil)
+	resp, err := c.HttpClient.Do(req)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -90,6 +106,32 @@ func (c *Client) GetService() {
 	fmt.Println(string(respbytes))
 	//fmt.Println(date)
 
+}
+
+
+func (c *Client) PutBucket(bname string) {
+	req := c.getRequest("PUT", "/"+bname, nil)
+	resp, err := c.HttpClient.Do(req)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	respbytes, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+	fmt.Println(string(respbytes))
+}
+
+func (c *Client) PutBucketACL(bname, acl string) {
+}
+
+func (c *Client) DeleteBucket(bname string) {
+	req := c.getRequest("DELETE", "/"+bname, nil)
+	resp, err := c.HttpClient.Do(req)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	respbytes, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+	fmt.Println(string(respbytes))
 }
 
 func NewValSorter(m map[string]string) *ValSorter {
