@@ -4,20 +4,29 @@ import (
 //	"encoding/xml"
 	"encoding/base64"
 	"fmt"
-	"net/url"
+//	"net/url"
+	"net/http"
 	"strings"
 	"sort"
 	"bytes"
 	"crypto/sha1"
 	"crypto/hmac"
 	"io"
+	"io/ioutil"
 	"hash"
+	"time"
+	"log"
 )
 
 type Client struct {
 	AccessID string
 	AccessKey string
 	Host string
+}
+
+type Bucket struct {
+	Name string
+	CreationDate string
 }
 
 type ValSorter struct {
@@ -31,7 +40,7 @@ func NewClient(host, accessId, accessKey string) (*Client) {
 	return &client
 }
 
-func (c *Client) SignParam(method, resource string, params url.Values) {
+func (c *Client) SignParam(method, resource string, params http.Header) {
 	//format x-oss-
 	tmpParams := make(map[string]string)
 
@@ -57,8 +66,30 @@ func (c *Client) SignParam(method, resource string, params url.Values) {
 	h := hmac.New(func() hash.Hash {return sha1.New()}, []byte(c.AccessKey)) //sha1.New()
 	io.WriteString(h, signStr)
 	signedStr := base64.StdEncoding.EncodeToString(h.Sum(nil))
-	authorizationStr := "OSS" + c.AccessID + ":" + signedStr
+	authorizationStr := "OSS " + c.AccessID + ":" + signedStr
+	fmt.Println(authorizationStr)
 	params.Set("Authorization", authorizationStr)
+}
+
+func (c *Client) GetService() {
+	httpClient := http.DefaultClient
+	reqUrl := "http://" + c.Host + "/"
+	req, _ := http.NewRequest("GET", reqUrl, nil)
+	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	//date = "Sun, 16 Sep 2012 12:18:36 GMT"
+	req.Header.Set("Date", date)
+	req.Header.Set("Host", c.Host)
+	//req.Header.Set("Authorization", c.AccessID)
+	c.SignParam("GET", "/", req.Header)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	respbytes, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+	fmt.Println(string(respbytes))
+	//fmt.Println(date)
+
 }
 
 func NewValSorter(m map[string]string) *ValSorter {
