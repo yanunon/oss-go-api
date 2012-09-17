@@ -1,32 +1,39 @@
 package oss
 
 import (
-//	"encoding/xml"
+	//	"encoding/xml"
 	"encoding/base64"
+	"errors"
 	"fmt"
-//	"net/url"
-	"net/http"
-	"strings"
-	"sort"
+	//	"net/url"
 	"bytes"
-	"crypto/sha1"
 	"crypto/hmac"
+	"crypto/sha1"
+	"hash"
 	"io"
 	"io/ioutil"
-	"hash"
-	"time"
 	"log"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	ACL_PUBLIC_RW = "public-read-write"
+	ACL_PUBLIC_R  = "public-read"
+	ACL_PRIVATE   = "private"
 )
 
 type Client struct {
-	AccessID string
-	AccessKey string
-	Host string
+	AccessID   string
+	AccessKey  string
+	Host       string
 	HttpClient *http.Client
 }
 
 type Bucket struct {
-	Name string
+	Name         string
 	CreationDate string
 }
 
@@ -35,13 +42,12 @@ type ValSorter struct {
 	Vals []string
 }
 
-
-func NewClient(host, accessId, accessKey string) (*Client) {
+func NewClient(host, accessId, accessKey string) *Client {
 	client := Client{
-		Host : host,
-		AccessID : accessId,
-		AccessKey : accessKey,
-		HttpClient : http.DefaultClient,
+		Host:       host,
+		AccessID:   accessId,
+		AccessKey:  accessKey,
+		HttpClient: http.DefaultClient,
 	}
 	return &client
 }
@@ -60,7 +66,7 @@ func (c *Client) signHeader(req *http.Request) {
 	valSorter.Sort()
 
 	canonicalizedOSSHeaders := ""
-	for i := range(valSorter.Keys) {
+	for i := range valSorter.Keys {
 		canonicalizedOSSHeaders += valSorter.Keys[i] + ":" + valSorter.Vals[i] + "\n"
 	}
 
@@ -68,18 +74,18 @@ func (c *Client) signHeader(req *http.Request) {
 	contentType := req.Header.Get("Content-Type")
 	contentMd5 := req.Header.Get("Content-Md5")
 
-	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders  + req.URL.Path
-	h := hmac.New(func() hash.Hash {return sha1.New()}, []byte(c.AccessKey)) //sha1.New()
+	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders + req.URL.Path
+	h := hmac.New(func() hash.Hash { return sha1.New() }, []byte(c.AccessKey)) //sha1.New()
 	io.WriteString(h, signStr)
 	signedStr := base64.StdEncoding.EncodeToString(h.Sum(nil))
 	authorizationStr := "OSS " + c.AccessID + ":" + signedStr
-	fmt.Println(authorizationStr)
+	//fmt.Println(authorizationStr)
 	req.Header.Set("Authorization", authorizationStr)
 }
 
-func (c *Client) getRequest(method, path string, params map[string]string) (req *http.Request) {
+func (c *Client) doRequest(method, path string, params map[string]string) (resp *http.Response, err error) {
 	reqUrl := "http://" + c.Host + path
-	req, _ = http.NewRequest(method, reqUrl, nil)
+	req, _ := http.NewRequest(method, reqUrl, nil)
 	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
 	req.Header.Set("Date", date)
 	req.Header.Set("Host", c.Host)
@@ -91,13 +97,13 @@ func (c *Client) getRequest(method, path string, params map[string]string) (req 
 	//req.Header.Set("Authorization", c.AccessID)
 	//c.SignParam("GET", "/", req.Header)
 	c.signHeader(req)
+	resp, err = c.HttpClient.Do(req)
 	return
 }
 
 //Get bucket list
 func (c *Client) GetService() {
-	req := c.getRequest("GET", "/", nil)
-	resp, err := c.HttpClient.Do(req)
+	resp, err := c.doRequest("GET", "/", nil)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -108,34 +114,54 @@ func (c *Client) GetService() {
 
 }
 
-
-func (c *Client) PutBucket(bname string) {
-	req := c.getRequest("PUT", "/"+bname, nil)
-	resp, err := c.HttpClient.Do(req)
+func (c *Client) PutBucket(bname string) (err error) {
+	resp, err := c.doRequest("PUT", "/"+bname, nil)
 	if err != nil {
-		log.Fatalln(err)
+		return
 	}
-	respbytes, _ := ioutil.ReadAll(resp.Body)
-	defer resp.Body.Close()
-	fmt.Println(string(respbytes))
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		body, _ := ioutil.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		fmt.Println(body)
+	}
+	return
 }
 
-func (c *Client) PutBucketACL(bname, acl string) {
+func (c *Client) PutBucketACL(bname, acl string) (err error) {
+	params := map[string]string{"x-oss-acl": acl}
+	resp, err := c.doRequest("PUT", "/"+bname, params)
+	if err != nil {
+		return
+	}
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		body, _ := ioutil.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		fmt.Println(body)
+	}
+	return
 }
 
-func (c *Client) DeleteBucket(bname string) {
-	req := c.getRequest("DELETE", "/"+bname, nil)
-	resp, err := c.HttpClient.Do(req)
+func (c *Client) DeleteBucket(bname string) (err error) {
+	resp, err := c.doRequest("DELETE", "/"+bname, nil)
 	if err != nil {
-		log.Fatalln(err)
+		return
 	}
-	respbytes, _ := ioutil.ReadAll(resp.Body)
-	defer resp.Body.Close()
-	fmt.Println(string(respbytes))
+
+	if resp.StatusCode != 204 {
+		err = errors.New(resp.Status)
+		body, _ := ioutil.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		fmt.Println(body)
+	}
+	return
 }
 
 func NewValSorter(m map[string]string) *ValSorter {
-	vs := &ValSorter {
+	vs := &ValSorter{
 		Keys: make([]string, 0, len(m)),
 		Vals: make([]string, 0, len(m)),
 	}
