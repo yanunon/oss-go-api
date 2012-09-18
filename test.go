@@ -18,5 +18,6 @@ func main() {
 	//c.SignParam("GET", "/", params)
 	//c.DeleteBucket("yanunon2")
 	//err := c.PutBucket("yanunon2")
-	c.GetBucketACL("yanunon2")
+	c.GetBucket("yanunon", "img", "", "", "")
+	c.GetBucketACL("yanunon")
 }

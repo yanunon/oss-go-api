@@ -54,6 +54,16 @@ type ListAllMyBucketsResult struct {
 	Buckets Buckets
 }
 
+type ListBucketResult struct {
+	Name        string
+	Prefix      string
+	Marker      string
+	MaxKeys     int
+	Delimiter   string
+	IsTruncated bool
+	Contents    []Object
+}
+
 type Object struct {
 	Key          string
 	LastModified string
@@ -107,8 +117,9 @@ func (c *Client) signHeader(req *http.Request) {
 	contentMd5 := req.Header.Get("Content-Md5")
 
 	canonicalizedResource := req.URL.Path
-	if req.URL.RawQuery != "" {
-		canonicalizedResource += "?" + req.URL.RawQuery
+	query := req.URL.Query()
+	if _, ok := query["acl"]; ok {
+		canonicalizedResource += "?" + "acl"
 	}
 	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders + canonicalizedResource
 	h := hmac.New(func() hash.Hash { return sha1.New() }, []byte(c.AccessKey)) //sha1.New()
@@ -188,6 +199,49 @@ func (c *Client) PutBucketACL(bname, acl string) (err error) {
 	return
 }
 
+func (c *Client) GetBucket(bname, prefix, marker, delimiter, maxkeys string) (lbr ListBucketResult, err error) {
+	reqStr := "/" + bname
+	query := map[string]string{}
+	if prefix != "" {
+		query["prefix"] = prefix
+	}
+
+	if marker != "" {
+		query["marker"] = marker
+	}
+
+	if delimiter != "" {
+		query["delimiter"] = delimiter
+	}
+
+	if maxkeys != "" {
+		query["max-keys"] = maxkeys
+	}
+
+	if len(query) > 0 {
+		reqStr += "?"
+		for k, v := range query {
+			reqStr += k + "=" + v + "&"
+		}
+	}
+
+	resp, err := c.doRequest("GET", reqStr, nil)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	xml.Unmarshal(body, &lbr)
+	return
+}
+
 func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error) {
 	resp, err := c.doRequest("GET", "/"+bname+"?acl", nil)
 	if err != nil {
@@ -204,7 +258,6 @@ func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error)
 	}
 
 	xml.Unmarshal(body, &acl)
-	fmt.Printf("%+v\n", acl)
 	return
 }
 
