@@ -1,19 +1,18 @@
 package oss
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
-	//	"net/url"
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha1"
 	"hash"
 	"io"
 	"io/ioutil"
-	//"log"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -334,6 +333,55 @@ func (c *Client) GetObject(opath string, rangeStart, rangeEnd int) (obytes []byt
 	//fmt.Println(string(body))
 	obytes = body
 	return
+}
+
+func (c *Client) PutObject(opath string, filepath string) (err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	reqUrl := "http://" + c.Host + opath
+	buffer := new(bytes.Buffer)
+
+	fh, err := os.Open(filepath)
+	if err != nil {
+		return
+	}
+	defer fh.Close()
+	io.Copy(buffer, fh)
+
+	contentType := http.DetectContentType(buffer.Bytes())
+
+	req, err := http.NewRequest("PUT", reqUrl, buffer)
+	if err != nil {
+		return
+	}
+
+	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	req.Header.Set("Date", date)
+	req.Header.Set("Host", c.Host)
+	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
+	req.Header.Set("Content-Type", contentType)
+
+	//req.Header.Set("Authorization", c.AccessID)
+	//c.SignParam("GET", "/", req.Header)
+	c.signHeader(req)
+	resp, err := c.HttpClient.Do(req)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Println(string(body))
+	return
+
 }
 
 func NewvalSorter(m map[string]string) *valSorter {
