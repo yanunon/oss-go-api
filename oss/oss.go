@@ -15,6 +15,7 @@ import (
 	//"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -262,7 +263,36 @@ func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error)
 }
 
 func (c *Client) DeleteBucket(bname string) (err error) {
-	resp, err := c.doRequest("DELETE", "/"+bname, nil)
+	return c.DeleteObject(bname)
+}
+
+func (c *Client) CopyObject(src, dst string) (err error) {
+	if strings.HasPrefix(src, "/") == false {
+		src = "/" + src
+	}
+	if strings.HasPrefix(dst, "/") == false {
+		dst = "/" + dst
+	}
+	params := map[string]string{"x-oss-copy-source": src}
+	resp, err := c.doRequest("PUT", dst, params)
+	if err != nil {
+		return
+	}
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		body, _ := ioutil.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		fmt.Println(string(body))
+	}
+	return
+}
+
+func (c *Client) DeleteObject(opath string) (err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+	resp, err := c.doRequest("DELETE", opath, nil)
 	if err != nil {
 		return
 	}
@@ -273,6 +303,36 @@ func (c *Client) DeleteBucket(bname string) (err error) {
 		defer resp.Body.Close()
 		fmt.Println(string(body))
 	}
+	return
+}
+
+//Download object in opath.
+//If rangeStart > -1 and rangeEnd > -1, download the object partially.
+func (c *Client) GetObject(opath string, rangeStart, rangeEnd int) (obytes []byte, err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	params := map[string]string{}
+	if rangeStart > -1 && rangeEnd > -1 {
+		params["range"] = "bytes=" + strconv.Itoa(rangeStart) + "-" + strconv.Itoa(rangeEnd)
+	}
+
+	resp, err := c.doRequest("GET", opath, params)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 206 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	//fmt.Println(string(body))
+	obytes = body
 	return
 }
 

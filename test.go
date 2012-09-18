@@ -3,7 +3,8 @@ package main
 import (
 	"github.com/yanunon/oss-go-api/oss"
 	//"net/url"
-	//"fmt"
+	"fmt"
+	"io/ioutil"
 )
 
 func main() {
@@ -18,6 +19,10 @@ func main() {
 	//c.SignParam("GET", "/", params)
 	//c.DeleteBucket("yanunon2")
 	//err := c.PutBucket("yanunon2")
-	c.GetBucket("yanunon", "img", "", "", "")
-	c.GetBucketACL("yanunon")
+	//c.GetBucket("yanunon", "img", "", "", "")
+	obs, err := c.GetObject("yanunon/img/000061.jpg", 0, 10)
+	if err != nil {
+		fmt.Println(err)
+	}
+	ioutil.WriteFile("000061.jpg", obs, 0666)
 }
