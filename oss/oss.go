@@ -1,8 +1,8 @@
 package oss
 
 import (
-	//	"encoding/xml"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	//	"net/url"
@@ -12,7 +12,7 @@ import (
 	"hash"
 	"io"
 	"io/ioutil"
-	"log"
+	//"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -24,6 +24,14 @@ const (
 	ACL_PUBLIC_R  = "public-read"
 	ACL_PRIVATE   = "private"
 )
+
+type AccessControlList struct {
+	Grant string
+}
+type AccessControlPolicy struct {
+	Owner             Owner
+	AccessControlList AccessControlList
+}
 
 type Client struct {
 	AccessID   string
@@ -37,7 +45,31 @@ type Bucket struct {
 	CreationDate string
 }
 
-type ValSorter struct {
+type Buckets struct {
+	Bucket []Bucket
+}
+
+type ListAllMyBucketsResult struct {
+	Owner   Owner
+	Buckets Buckets
+}
+
+type Object struct {
+	Key          string
+	LastModified string
+	ETag         string
+	Type         string
+	Size         int
+	StorageClass string
+	Owner        Owner
+}
+
+type Owner struct {
+	ID          string
+	DisplayName string
+}
+
+type valSorter struct {
 	Keys []string
 	Vals []string
 }
@@ -62,19 +94,23 @@ func (c *Client) signHeader(req *http.Request) {
 		}
 	}
 	//sort
-	valSorter := NewValSorter(tmpParams)
-	valSorter.Sort()
+	vs := NewvalSorter(tmpParams)
+	vs.Sort()
 
 	canonicalizedOSSHeaders := ""
-	for i := range valSorter.Keys {
-		canonicalizedOSSHeaders += valSorter.Keys[i] + ":" + valSorter.Vals[i] + "\n"
+	for i := range vs.Keys {
+		canonicalizedOSSHeaders += vs.Keys[i] + ":" + vs.Vals[i] + "\n"
 	}
 
 	date := req.Header.Get("Date")
 	contentType := req.Header.Get("Content-Type")
 	contentMd5 := req.Header.Get("Content-Md5")
 
-	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders + req.URL.Path
+	canonicalizedResource := req.URL.Path
+	if req.URL.RawQuery != "" {
+		canonicalizedResource += "?" + req.URL.RawQuery
+	}
+	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders + canonicalizedResource
 	h := hmac.New(func() hash.Hash { return sha1.New() }, []byte(c.AccessKey)) //sha1.New()
 	io.WriteString(h, signStr)
 	signedStr := base64.StdEncoding.EncodeToString(h.Sum(nil))
@@ -102,16 +138,23 @@ func (c *Client) doRequest(method, path string, params map[string]string) (resp 
 }
 
 //Get bucket list
-func (c *Client) GetService() {
+func (c *Client) GetService() (lar ListAllMyBucketsResult, err error) {
 	resp, err := c.doRequest("GET", "/", nil)
 	if err != nil {
-		log.Fatalln(err)
+		return
 	}
-	respbytes, _ := ioutil.ReadAll(resp.Body)
-	defer resp.Body.Close()
-	fmt.Println(string(respbytes))
-	//fmt.Println(date)
 
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+
+	xml.Unmarshal(body, &lar)
+	return
 }
 
 func (c *Client) PutBucket(bname string) (err error) {
@@ -124,7 +167,7 @@ func (c *Client) PutBucket(bname string) (err error) {
 		err = errors.New(resp.Status)
 		body, _ := ioutil.ReadAll(resp.Body)
 		defer resp.Body.Close()
-		fmt.Println(body)
+		fmt.Println(string(body))
 	}
 	return
 }
@@ -140,8 +183,28 @@ func (c *Client) PutBucketACL(bname, acl string) (err error) {
 		err = errors.New(resp.Status)
 		body, _ := ioutil.ReadAll(resp.Body)
 		defer resp.Body.Close()
-		fmt.Println(body)
+		fmt.Println(string(body))
 	}
+	return
+}
+
+func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error) {
+	resp, err := c.doRequest("GET", "/"+bname+"?acl", nil)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+
+	xml.Unmarshal(body, &acl)
+	fmt.Printf("%+v\n", acl)
 	return
 }
 
@@ -155,13 +218,13 @@ func (c *Client) DeleteBucket(bname string) (err error) {
 		err = errors.New(resp.Status)
 		body, _ := ioutil.ReadAll(resp.Body)
 		defer resp.Body.Close()
-		fmt.Println(body)
+		fmt.Println(string(body))
 	}
 	return
 }
 
-func NewValSorter(m map[string]string) *ValSorter {
-	vs := &ValSorter{
+func NewvalSorter(m map[string]string) *valSorter {
+	vs := &valSorter{
 		Keys: make([]string, 0, len(m)),
 		Vals: make([]string, 0, len(m)),
 	}
@@ -173,19 +236,19 @@ func NewValSorter(m map[string]string) *ValSorter {
 	return vs
 }
 
-func (vs *ValSorter) Sort() {
+func (vs *valSorter) Sort() {
 	sort.Sort(vs)
 }
 
-func (vs *ValSorter) Len() int {
+func (vs *valSorter) Len() int {
 	return len(vs.Vals)
 }
 
-func (vs *ValSorter) Less(i, j int) bool {
+func (vs *valSorter) Less(i, j int) bool {
 	return bytes.Compare([]byte(vs.Keys[i]), []byte(vs.Keys[j])) < 0
 }
 
-func (vs *ValSorter) Swap(i, j int) {
+func (vs *valSorter) Swap(i, j int) {
 	vs.Vals[i], vs.Vals[j] = vs.Vals[j], vs.Vals[i]
 	vs.Keys[i], vs.Keys[j] = vs.Keys[j], vs.Keys[i]
 }

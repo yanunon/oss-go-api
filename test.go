@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/yanunon/oss-go-api/oss"
 	//"net/url"
-	"fmt"
+	//"fmt"
 )
 
 func main() {
@@ -17,17 +17,6 @@ func main() {
 
 	//c.SignParam("GET", "/", params)
 	//c.DeleteBucket("yanunon2")
-	err := c.PutBucket("yanunon2")
-	if err != nil {
-		fmt.Printf("PutBucket error:%s\n", err)
-	}
-	err = c.PutBucketACL("yanunon2", oss.ACL_PUBLIC_RW)
-	if err != nil {
-		fmt.Printf("PutBucketACL error:%s\n", err)
-	}
-	err = c.DeleteBucket("yanunon2")
-	if err != nil {
-		fmt.Printf("DeleteBucket error:%s\n", err)
-	}
-	c.GetService()
+	//err := c.PutBucket("yanunon2")
+	c.GetBucketACL("yanunon2")
 }
