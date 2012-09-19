@@ -33,6 +33,30 @@ type AccessControlPolicy struct {
 	AccessControlList AccessControlList
 }
 
+type Bucket struct {
+	Name         string
+	CreationDate string
+}
+
+type CreateFileGroup struct {
+	Part []GroupPart
+}
+
+type FileGroup struct {
+	Bucket     string
+	Key        string
+	ETag       string
+	FileLength int
+	FilePart   CreateFileGroup
+}
+
+type CompleteFileGroup struct {
+	Bucket string
+	Key    string
+	Size   int
+	ETag   string
+}
+
 type Client struct {
 	AccessID   string
 	AccessKey  string
@@ -40,13 +64,15 @@ type Client struct {
 	HttpClient *http.Client
 }
 
-type Bucket struct {
-	Name         string
-	CreationDate string
-}
-
 type Buckets struct {
 	Bucket []Bucket
+}
+
+type GroupPart struct {
+	PartNumber int
+	PartName   string
+	PartSize   int
+	ETag       string
 }
 
 type ListAllMyBucketsResult struct {
@@ -121,6 +147,9 @@ func (c *Client) signHeader(req *http.Request) {
 	if _, ok := query["acl"]; ok {
 		canonicalizedResource += "?" + "acl"
 	}
+	if _, ok := query["group"]; ok {
+		canonicalizedResource += "?" + "group"
+	}
 	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders + canonicalizedResource
 	h := hmac.New(func() hash.Hash { return sha1.New() }, []byte(c.AccessKey)) //sha1.New()
 	io.WriteString(h, signStr)
@@ -164,7 +193,7 @@ func (c *Client) GetService() (lar ListAllMyBucketsResult, err error) {
 		return
 	}
 
-	xml.Unmarshal(body, &lar)
+	err = xml.Unmarshal(body, &lar)
 	return
 }
 
@@ -238,7 +267,7 @@ func (c *Client) GetBucket(bname, prefix, marker, delimiter, maxkeys string) (lb
 		fmt.Println(string(body))
 		return
 	}
-	xml.Unmarshal(body, &lbr)
+	err = xml.Unmarshal(body, &lbr)
 	return
 }
 
@@ -257,7 +286,7 @@ func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error)
 		return
 	}
 
-	xml.Unmarshal(body, &acl)
+	err = xml.Unmarshal(body, &acl)
 	return
 }
 
@@ -382,6 +411,95 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	fmt.Println(string(body))
 	return
 
+}
+
+func (c *Client) HeadObject(opath string) (header http.Header, err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+	resp, err := c.doRequest("HEAD", opath, nil)
+	if err != nil {
+		return
+	}
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		return
+	}
+	header = resp.Header
+	return
+}
+
+func (c *Client) DeleteMultipleObject(bname string, onames []string) (err error) {
+	return
+}
+
+func (c *Client) PostObjectGroup(cfg CreateFileGroup, opath string) (completefg CompleteFileGroup, err error) {
+	//part := []GroupPart{{1, "11", "111"}, {2, "22", "222"}, {3, "33", "333"}}
+	//fg := CreateFileGroup{Part:part}
+	bs, err := xml.Marshal(cfg)
+	if err != nil {
+		return
+	}
+
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	reqUrl := "http://" + c.Host + opath + "?group"
+	buffer := new(bytes.Buffer)
+	buffer.Write(bs)
+
+	req, err := http.NewRequest("POST", reqUrl, buffer)
+	if err != nil {
+		return
+	}
+
+	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	req.Header.Set("Date", date)
+	req.Header.Set("Host", c.Host)
+	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
+	//req.Header.Set("Content-Type", contentType)
+
+	c.signHeader(req)
+	resp, err := c.HttpClient.Do(req)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	err = xml.Unmarshal(body, &completefg)
+	return
+}
+
+func (c *Client) GetObjectGroupIndex(opath string) (fg FileGroup, err error) {
+	params := map[string]string{"x-oss-file-group": "NULL"}
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+	resp, err := c.doRequest("GET", opath, params)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+
+	err = xml.Unmarshal(body, &fg)
+	return
 }
 
 func NewvalSorter(m map[string]string) *valSorter {
