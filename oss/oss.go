@@ -502,6 +502,18 @@ func (c *Client) GetObjectGroupIndex(opath string) (fg FileGroup, err error) {
 	return
 }
 
+func (c *Client) GetObjectGroup(opath string, rangeStart, rangeEnd int) (obytes []byte, err error) {
+	return c.GetObject(opath, rangeStart, rangeEnd)
+}
+
+func (c *Client) HeadObjectGroup(opath string) (header http.Header, err error) {
+	return c.HeadObject(opath)
+}
+
+func (c *Client) DeleteObjectGroup(bname string) (err error) {
+	return c.DeleteObject(bname)
+}
+
 func NewvalSorter(m map[string]string) *valSorter {
 	vs := &valSorter{
 		Keys: make([]string, 0, len(m)),
