@@ -3,6 +3,7 @@ package oss
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/xml"
@@ -149,6 +150,17 @@ func (c *Client) signHeader(req *http.Request) {
 	}
 	if _, ok := query["group"]; ok {
 		canonicalizedResource += "?" + "group"
+	}
+	if _, ok := query["uploads"]; ok {
+		canonicalizedResource += "?" + "uploads"
+	}
+	if num, ok := query["partNumber"]; ok {
+		canonicalizedResource += "?" + "partNumber=" + num[0]
+		if id, ok := query["uploadId"]; ok {
+			canonicalizedResource += "&uploadId=" + id[0]
+		}
+	} else if id, ok := query["uploadId"]; ok {
+		canonicalizedResource += "?uploadId=" + id[0]
 	}
 	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders + canonicalizedResource
 	h := hmac.New(func() hash.Hash { return sha1.New() }, []byte(c.AccessKey)) //sha1.New()
@@ -409,6 +421,181 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 		return
 	}
 	fmt.Println(string(body))
+	return
+
+}
+
+type initMultipartUploadResult struct {
+	Bucket   string
+	Key      string
+	UploadId string
+}
+
+func (c *Client) initMultipartUpload(opath string) (imur initMultipartUploadResult, err error) {
+	resp, err := c.doRequest("POST", opath+"?uploads", nil)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+
+	err = xml.Unmarshal(body, &imur)
+	return
+}
+
+func (c *Client) uploadWorker(file *os.File, start, length, idx int, opath, uploadId string) (part Multipart, err error) {
+	buffer := new(bytes.Buffer)
+	file.Seek(int64(start), 0)
+	io.CopyN(buffer, file, int64(length))
+	h := md5.New()
+	h.Write(buffer.Bytes())
+	md5sum := fmt.Sprintf("%x", h.Sum(nil))
+	md5sum = "\"" + strings.ToUpper(md5sum) + "\""
+	fmt.Printf("md5sum:%s\n", md5sum)
+
+	reqUrl := "http://" + c.Host + opath + "?partNumber=" + strconv.Itoa(idx) + "&uploadId=" + uploadId
+	req, err := http.NewRequest("PUT", reqUrl, buffer)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	req.Header.Set("Date", date)
+	req.Header.Set("Host", c.Host)
+	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
+
+	//req.Header.Set("Authorization", c.AccessID)
+	//c.SignParam("GET", "/", req.Header)
+	c.signHeader(req)
+	resp, err := c.HttpClient.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		body, _ := ioutil.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		fmt.Printf("resp status:%s\n", err)
+		fmt.Println(string(body))
+		return
+	}
+
+	ETag := resp.Header.Get("ETag")
+	if ETag != md5sum {
+		fmt.Printf("ETag:%s != md5sum %s\n", ETag, md5sum)
+	}
+	part.ETag = ETag
+	part.PartNumber = idx
+	return
+}
+
+type CompleteMultipartUpload struct {
+	Part []Multipart
+}
+
+type Multipart struct {
+	PartNumber int
+	ETag       string
+}
+
+type CompleteMultipartUploadResult struct {
+	Location string
+	Bucket   string
+	ETag     string
+	Key      string
+}
+
+func (c *Client) uploadPart(imur initMultipartUploadResult, opath, filepath string) (cmu CompleteMultipartUpload, err error) {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return
+	}
+
+	buffer_len := 5 << 20
+	fi, err := file.Stat()
+	if err != nil {
+		return
+	}
+	file_len := int(fi.Size())
+	thread_num := (file_len + buffer_len - 1) / buffer_len
+	fmt.Printf("thread_num:%d\n", thread_num)
+	for i := 0; i < thread_num; i++ {
+		var part Multipart
+		if i == thread_num-1 {
+			last_len := file_len - buffer_len*i
+			part, err = c.uploadWorker(file, i*buffer_len, last_len, i+1, opath, imur.UploadId)
+		} else {
+			part, err = c.uploadWorker(file, i*buffer_len, buffer_len, i+1, opath, imur.UploadId)
+		}
+		cmu.Part = append(cmu.Part, part)
+	}
+	return
+
+}
+
+func (c *Client) completeMultipartUpload(cmu CompleteMultipartUpload, opath, uploadId string) (cmur CompleteMultipartUploadResult, err error) {
+	bs, err := xml.Marshal(cmu)
+	if err != nil {
+		return
+	}
+
+	reqUrl := "http://" + c.Host + opath + "?uploadId=" + uploadId
+	buffer := new(bytes.Buffer)
+	buffer.Write(bs)
+	fmt.Println(string(bs))
+	req, err := http.NewRequest("POST", reqUrl, buffer)
+	if err != nil {
+		return
+	}
+
+	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	req.Header.Set("Date", date)
+	req.Header.Set("Host", c.Host)
+	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
+	//req.Header.Set("Content-Type", contentType)
+
+	c.signHeader(req)
+	resp, err := c.HttpClient.Do(req)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	err = xml.Unmarshal(body, &cmur)
+	return
+}
+
+func (c *Client) PutLargeObject(opath string, filepath string) (err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	imur, err := c.initMultipartUpload(opath)
+	fmt.Printf("%+v\n", imur)
+	imu, err := c.uploadPart(imur, opath, filepath)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	_, err = c.completeMultipartUpload(imu, opath, imur.UploadId)
 	return
 
 }

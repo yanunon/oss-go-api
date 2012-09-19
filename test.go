@@ -30,9 +30,9 @@ func main() {
 	//	part := []oss.GroupPart{{1, "img/000034.jpg", 0, "B7FB0022DD6849772EF5BEFB1A309754"}, {2, "img/000062.jpg", 0, "82124A5E0D1B710395C32EB16145D705"}}
 	//cfg := oss.CreateFileGroup{part}
 	//ccfg, err := c.PostObjectGroup(cfg, "yanunon/g")
-	fg, err := c.GetObjectGroupIndex("yanunon/g")
+	err := c.PutLargeObject("yanunon/large", "/home/kite/Downloads/opencv-1.0.0.tar.gz")
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Printf("%+v\n", fg)
+	//fmt.Printf("%+v\n", fg)
 }
