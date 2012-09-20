@@ -1,3 +1,5 @@
+// Package Aliyun OSS API.
+//
 package oss
 
 import (
@@ -43,6 +45,22 @@ type CreateFileGroup struct {
 	Part []GroupPart
 }
 
+type CompleteMultipartUpload struct {
+	Part []Multipart
+}
+
+type Multipart struct {
+	PartNumber int
+	ETag       string
+}
+
+type CompleteMultipartUploadResult struct {
+	Location string
+	Bucket   string
+	ETag     string
+	Key      string
+}
+
 type FileGroup struct {
 	Bucket     string
 	Key        string
@@ -74,6 +92,12 @@ type GroupPart struct {
 	PartName   string
 	PartSize   int
 	ETag       string
+}
+
+type initMultipartUploadResult struct {
+	Bucket   string
+	Key      string
+	UploadId string
 }
 
 type ListAllMyBucketsResult struct {
@@ -111,6 +135,7 @@ type valSorter struct {
 	Vals []string
 }
 
+//NewClient returns a new Client given a Host, AccessID and AccessKey.
 func NewClient(host, accessId, accessKey string) *Client {
 	client := Client{
 		Host:       host,
@@ -121,7 +146,7 @@ func NewClient(host, accessId, accessKey string) *Client {
 	return &client
 }
 
-func (c *Client) signHeader(req *http.Request) {
+func (c *Client) signHeader(req *http.Request, canonicalizedResource string) {
 	//format x-oss-
 	tmpParams := make(map[string]string)
 
@@ -131,7 +156,7 @@ func (c *Client) signHeader(req *http.Request) {
 		}
 	}
 	//sort
-	vs := NewvalSorter(tmpParams)
+	vs := newValSorter(tmpParams)
 	vs.Sort()
 
 	canonicalizedOSSHeaders := ""
@@ -143,25 +168,6 @@ func (c *Client) signHeader(req *http.Request) {
 	contentType := req.Header.Get("Content-Type")
 	contentMd5 := req.Header.Get("Content-Md5")
 
-	canonicalizedResource := req.URL.Path
-	query := req.URL.Query()
-	if _, ok := query["acl"]; ok {
-		canonicalizedResource += "?" + "acl"
-	}
-	if _, ok := query["group"]; ok {
-		canonicalizedResource += "?" + "group"
-	}
-	if _, ok := query["uploads"]; ok {
-		canonicalizedResource += "?" + "uploads"
-	}
-	if num, ok := query["partNumber"]; ok {
-		canonicalizedResource += "?" + "partNumber=" + num[0]
-		if id, ok := query["uploadId"]; ok {
-			canonicalizedResource += "&uploadId=" + id[0]
-		}
-	} else if id, ok := query["uploadId"]; ok {
-		canonicalizedResource += "?uploadId=" + id[0]
-	}
 	signStr := req.Method + "\n" + contentMd5 + "\n" + contentType + "\n" + date + "\n" + canonicalizedOSSHeaders + canonicalizedResource
 	h := hmac.New(func() hash.Hash { return sha1.New() }, []byte(c.AccessKey)) //sha1.New()
 	io.WriteString(h, signStr)
@@ -171,27 +177,30 @@ func (c *Client) signHeader(req *http.Request) {
 	req.Header.Set("Authorization", authorizationStr)
 }
 
-func (c *Client) doRequest(method, path string, params map[string]string) (resp *http.Response, err error) {
+func (c *Client) doRequest(method, path, canonicalizedResource string, params map[string]string, data io.Reader) (resp *http.Response, err error) {
 	reqUrl := "http://" + c.Host + path
-	req, _ := http.NewRequest(method, reqUrl, nil)
+	req, _ := http.NewRequest(method, reqUrl, data)
 	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
 	req.Header.Set("Date", date)
 	req.Header.Set("Host", c.Host)
+
 	if params != nil {
 		for k, v := range params {
 			req.Header.Set(k, v)
 		}
 	}
-	//req.Header.Set("Authorization", c.AccessID)
-	//c.SignParam("GET", "/", req.Header)
-	c.signHeader(req)
+
+	if data != nil {
+		req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
+	}
+	c.signHeader(req, canonicalizedResource)
 	resp, err = c.HttpClient.Do(req)
 	return
 }
 
-//Get bucket list
+//Get bucket list. Return a ListAllMyBucketsResult object.
 func (c *Client) GetService() (lar ListAllMyBucketsResult, err error) {
-	resp, err := c.doRequest("GET", "/", nil)
+	resp, err := c.doRequest("GET", "/", "/", nil, nil)
 	if err != nil {
 		return
 	}
@@ -209,8 +218,9 @@ func (c *Client) GetService() (lar ListAllMyBucketsResult, err error) {
 	return
 }
 
+//Create a new bucket with a name.
 func (c *Client) PutBucket(bname string) (err error) {
-	resp, err := c.doRequest("PUT", "/"+bname, nil)
+	resp, err := c.doRequest("PUT", "/"+bname, "/"+bname, nil, nil)
 	if err != nil {
 		return
 	}
@@ -226,7 +236,7 @@ func (c *Client) PutBucket(bname string) (err error) {
 
 func (c *Client) PutBucketACL(bname, acl string) (err error) {
 	params := map[string]string{"x-oss-acl": acl}
-	resp, err := c.doRequest("PUT", "/"+bname, params)
+	resp, err := c.doRequest("PUT", "/"+bname, "", params, nil)
 	if err != nil {
 		return
 	}
@@ -266,7 +276,7 @@ func (c *Client) GetBucket(bname, prefix, marker, delimiter, maxkeys string) (lb
 		}
 	}
 
-	resp, err := c.doRequest("GET", reqStr, nil)
+	resp, err := c.doRequest("GET", reqStr, "", nil, nil)
 	if err != nil {
 		return
 	}
@@ -284,7 +294,8 @@ func (c *Client) GetBucket(bname, prefix, marker, delimiter, maxkeys string) (lb
 }
 
 func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error) {
-	resp, err := c.doRequest("GET", "/"+bname+"?acl", nil)
+	reqStr := "/" + bname + "?acl"
+	resp, err := c.doRequest("GET", reqStr, reqStr, nil, nil)
 	if err != nil {
 		return
 	}
@@ -314,7 +325,7 @@ func (c *Client) CopyObject(src, dst string) (err error) {
 		dst = "/" + dst
 	}
 	params := map[string]string{"x-oss-copy-source": src}
-	resp, err := c.doRequest("PUT", dst, params)
+	resp, err := c.doRequest("PUT", dst, "", params, nil)
 	if err != nil {
 		return
 	}
@@ -332,7 +343,7 @@ func (c *Client) DeleteObject(opath string) (err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
-	resp, err := c.doRequest("DELETE", opath, nil)
+	resp, err := c.doRequest("DELETE", opath, "", nil, nil)
 	if err != nil {
 		return
 	}
@@ -358,7 +369,7 @@ func (c *Client) GetObject(opath string, rangeStart, rangeEnd int) (obytes []byt
 		params["range"] = "bytes=" + strconv.Itoa(rangeStart) + "-" + strconv.Itoa(rangeEnd)
 	}
 
-	resp, err := c.doRequest("GET", opath, params)
+	resp, err := c.doRequest("GET", opath, "", params, nil)
 	if err != nil {
 		return
 	}
@@ -381,7 +392,7 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 		opath = "/" + opath
 	}
 
-	reqUrl := "http://" + c.Host + opath
+	//reqUrl := "http://" + c.Host + opath
 	buffer := new(bytes.Buffer)
 
 	fh, err := os.Open(filepath)
@@ -392,22 +403,10 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	io.Copy(buffer, fh)
 
 	contentType := http.DetectContentType(buffer.Bytes())
+	params := map[string]string {}
+	params["Content-Type"] = contentType
 
-	req, err := http.NewRequest("PUT", reqUrl, buffer)
-	if err != nil {
-		return
-	}
-
-	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	req.Header.Set("Date", date)
-	req.Header.Set("Host", c.Host)
-	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
-	req.Header.Set("Content-Type", contentType)
-
-	//req.Header.Set("Authorization", c.AccessID)
-	//c.SignParam("GET", "/", req.Header)
-	c.signHeader(req)
-	resp, err := c.HttpClient.Do(req)
+	resp, err := c.doRequest("PUT", opath, "", params, buffer)
 	if err != nil {
 		return
 	}
@@ -425,14 +424,9 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 
 }
 
-type initMultipartUploadResult struct {
-	Bucket   string
-	Key      string
-	UploadId string
-}
 
 func (c *Client) initMultipartUpload(opath string) (imur initMultipartUploadResult, err error) {
-	resp, err := c.doRequest("POST", opath+"?uploads", nil)
+	resp, err := c.doRequest("POST", opath+"?uploads", opath+"?uploads", nil, nil)
 	if err != nil {
 		return
 	}
@@ -458,24 +452,10 @@ func (c *Client) uploadWorker(file *os.File, start, length, idx int, opath, uplo
 	h.Write(buffer.Bytes())
 	md5sum := fmt.Sprintf("%x", h.Sum(nil))
 	md5sum = "\"" + strings.ToUpper(md5sum) + "\""
-	fmt.Printf("md5sum:%s\n", md5sum)
 
-	reqUrl := "http://" + c.Host + opath + "?partNumber=" + strconv.Itoa(idx) + "&uploadId=" + uploadId
-	req, err := http.NewRequest("PUT", reqUrl, buffer)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	reqStr := opath + "?partNumber=" + strconv.Itoa(idx) + "&uploadId=" + uploadId
 
-	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	req.Header.Set("Date", date)
-	req.Header.Set("Host", c.Host)
-	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
-
-	//req.Header.Set("Authorization", c.AccessID)
-	//c.SignParam("GET", "/", req.Header)
-	c.signHeader(req)
-	resp, err := c.HttpClient.Do(req)
+	resp, err := c.doRequest("PUT", reqStr, reqStr, nil, buffer)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -499,21 +479,6 @@ func (c *Client) uploadWorker(file *os.File, start, length, idx int, opath, uplo
 	return
 }
 
-type CompleteMultipartUpload struct {
-	Part []Multipart
-}
-
-type Multipart struct {
-	PartNumber int
-	ETag       string
-}
-
-type CompleteMultipartUploadResult struct {
-	Location string
-	Bucket   string
-	ETag     string
-	Key      string
-}
 
 func (c *Client) uploadPart(imur initMultipartUploadResult, opath, filepath string) (cmu CompleteMultipartUpload, err error) {
 	file, err := os.Open(filepath)
@@ -549,23 +514,12 @@ func (c *Client) completeMultipartUpload(cmu CompleteMultipartUpload, opath, upl
 		return
 	}
 
-	reqUrl := "http://" + c.Host + opath + "?uploadId=" + uploadId
+	reqStr := opath + "?uploadId=" + uploadId
+
 	buffer := new(bytes.Buffer)
 	buffer.Write(bs)
-	fmt.Println(string(bs))
-	req, err := http.NewRequest("POST", reqUrl, buffer)
-	if err != nil {
-		return
-	}
 
-	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	req.Header.Set("Date", date)
-	req.Header.Set("Host", c.Host)
-	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
-	//req.Header.Set("Content-Type", contentType)
-
-	c.signHeader(req)
-	resp, err := c.HttpClient.Do(req)
+	resp, err := c.doRequest("POST", reqStr, reqStr, nil, buffer)
 	if err != nil {
 		return
 	}
@@ -604,7 +558,7 @@ func (c *Client) HeadObject(opath string) (header http.Header, err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
-	resp, err := c.doRequest("HEAD", opath, nil)
+	resp, err := c.doRequest("HEAD", opath, "", nil, nil)
 	if err != nil {
 		return
 	}
@@ -633,23 +587,11 @@ func (c *Client) PostObjectGroup(cfg CreateFileGroup, opath string) (completefg 
 		opath = "/" + opath
 	}
 
-	reqUrl := "http://" + c.Host + opath + "?group"
+	reqStr := opath + "?group"
 	buffer := new(bytes.Buffer)
 	buffer.Write(bs)
 
-	req, err := http.NewRequest("POST", reqUrl, buffer)
-	if err != nil {
-		return
-	}
-
-	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	req.Header.Set("Date", date)
-	req.Header.Set("Host", c.Host)
-	req.Header.Set("Content-Length", strconv.Itoa(int(req.ContentLength)))
-	//req.Header.Set("Content-Type", contentType)
-
-	c.signHeader(req)
-	resp, err := c.HttpClient.Do(req)
+	resp, err := c.doRequest("POST", reqStr, reqStr, nil, buffer)
 	if err != nil {
 		return
 	}
@@ -667,11 +609,11 @@ func (c *Client) PostObjectGroup(cfg CreateFileGroup, opath string) (completefg 
 }
 
 func (c *Client) GetObjectGroupIndex(opath string) (fg FileGroup, err error) {
-	params := map[string]string{"x-oss-file-group": "NULL"}
+	params := map[string]string{"x-oss-file-group": ""}
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
-	resp, err := c.doRequest("GET", opath, params)
+	resp, err := c.doRequest("GET", opath, "", params, nil)
 	if err != nil {
 		return
 	}
@@ -701,7 +643,7 @@ func (c *Client) DeleteObjectGroup(bname string) (err error) {
 	return c.DeleteObject(bname)
 }
 
-func NewvalSorter(m map[string]string) *valSorter {
+func newValSorter(m map[string]string) *valSorter {
 	vs := &valSorter{
 		Keys: make([]string, 0, len(m)),
 		Vals: make([]string, 0, len(m)),
