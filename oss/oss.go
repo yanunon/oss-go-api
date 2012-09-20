@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,10 +40,6 @@ type AccessControlPolicy struct {
 type Bucket struct {
 	Name         string
 	CreationDate string
-}
-
-type CreateFileGroup struct {
-	Part []GroupPart
 }
 
 type CompleteMultipartUpload struct {
@@ -69,6 +66,10 @@ type FileGroup struct {
 	FilePart   CreateFileGroup
 }
 
+type CreateFileGroup struct {
+	Part []GroupPart
+}
+
 type CompleteFileGroup struct {
 	Bucket string
 	Key    string
@@ -76,22 +77,25 @@ type CompleteFileGroup struct {
 	ETag   string
 }
 
-type Client struct {
-	AccessID   string
-	AccessKey  string
-	Host       string
-	HttpClient *http.Client
-}
-
-type Buckets struct {
-	Bucket []Bucket
-}
-
+//GroupPart's partname should be the object's key and ETag is the same with the object's md5sum.
 type GroupPart struct {
 	PartNumber int
 	PartName   string
 	PartSize   int
 	ETag       string
+}
+
+type Client struct {
+	AccessID     string
+	AccessKey    string
+	Host         string
+	HttpClient   *http.Client
+	FileIOLocker sync.Mutex
+	ChanNum      int
+}
+
+type Buckets struct {
+	Bucket []Bucket
 }
 
 type initMultipartUploadResult struct {
@@ -130,18 +134,59 @@ type Owner struct {
 	DisplayName string
 }
 
+type ListMultipartUploadResult struct {
+	Bucket             string
+	KeyMarker          string
+	UploadIdMarker     string
+	NextKeyMarker      string
+	NextUploadIdMarker string
+	Delimiter          string
+	Prefix             string
+	MaxUploads         int
+	IsTruncated        bool
+	Upload             []UploadPart
+}
+
+type UploadPart struct {
+	Key       string
+	UploadId  string
+	Initiated string
+}
+
+type UploadedPart struct {
+	PartNumber   int
+	LastModified string
+	ETag         string
+	Size         int
+}
+
+type ListPartsResult struct {
+	Bucket               string
+	Key                  string
+	UploadId             string
+	NextPartNumberMarker string
+	MaxParts             int
+	IsTruncated          bool
+	Part                 []UploadedPart
+}
+
 type valSorter struct {
 	Keys []string
 	Vals []string
 }
 
+type multipartSorter struct {
+	Parts []Multipart
+}
+
 //NewClient returns a new Client given a Host, AccessID and AccessKey.
-func NewClient(host, accessId, accessKey string) *Client {
+func NewClient(host, accessId, accessKey string, channum int) *Client {
 	client := Client{
 		Host:       host,
 		AccessID:   accessId,
 		AccessKey:  accessKey,
 		HttpClient: http.DefaultClient,
+		ChanNum:    channum,
 	}
 	return &client
 }
@@ -433,11 +478,12 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	return
 }
 
+//Get object's meta information by its path. The format of remote path is "/bucketName/objectName".
 func (c *Client) HeadObject(opath string) (header http.Header, err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
-	resp, err := c.doRequest("HEAD", opath, "", nil, nil)
+	resp, err := c.doRequest("HEAD", opath, opath, nil, nil)
 	if err != nil {
 		return
 	}
@@ -450,8 +496,63 @@ func (c *Client) HeadObject(opath string) (header http.Header, err error) {
 	return
 }
 
-func (c *Client) DeleteMultipleObject(bname string, onames []string) (err error) {
+type deleteObj struct {
+	//XMLName xml.Name	`xml:"Object"`
+	Key string
+}
+
+type deleteList struct {
+	XMLName xml.Name `xml:"Delete"`
+	Object  []deleteObj
+	Quiet   bool
+}
+
+//Delete multiple objects by bucket name and keys.
+func (c *Client) DeleteMultipleObject(bname string, keys []string) (err error) {
+	dl := deleteList{}
+	for _, v := range keys {
+		dl.Object = append(dl.Object, deleteObj{v})
+	}
+	dl.Quiet = true
+
+	bs, err := xml.Marshal(dl)
+	if err != nil {
+		return
+	}
+
+	reqStr := "/" + bname + "?delete"
+	buffer := new(bytes.Buffer)
+	buffer.Write(bs)
+
+	h := md5.New()
+	h.Write(bs)
+	md5sum := base64.StdEncoding.EncodeToString(h.Sum(nil))
+	params := map[string]string{}
+	params["Content-MD5"] = md5sum
+
+	resp, err := c.doRequest("POST", reqStr, reqStr, params, buffer)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
 	return
+}
+
+type muJob struct {
+	File     *os.File
+	Start    int
+	Length   int
+	Idx      int
+	Opath    string
+	UploadId string
 }
 
 func (c *Client) initMultipartUpload(opath string) (imur initMultipartUploadResult, err error) {
@@ -473,16 +574,18 @@ func (c *Client) initMultipartUpload(opath string) (imur initMultipartUploadResu
 	return
 }
 
-func (c *Client) uploadWorker(file *os.File, start, length, idx int, opath, uploadId string) (part Multipart, err error) {
+func (c *Client) uploadDoWork(job *muJob) (part Multipart, err error) {
 	buffer := new(bytes.Buffer)
-	file.Seek(int64(start), 0)
-	io.CopyN(buffer, file, int64(length))
+	c.FileIOLocker.Lock()
+	job.File.Seek(int64(job.Start), 0)
+	io.CopyN(buffer, job.File, int64(job.Length))
+	c.FileIOLocker.Unlock()
 	h := md5.New()
 	h.Write(buffer.Bytes())
 	md5sum := fmt.Sprintf("%x", h.Sum(nil))
 	md5sum = "\"" + strings.ToUpper(md5sum) + "\""
 
-	reqStr := opath + "?partNumber=" + strconv.Itoa(idx) + "&uploadId=" + uploadId
+	reqStr := job.Opath + "?partNumber=" + strconv.Itoa(job.Idx) + "&uploadId=" + job.UploadId
 
 	resp, err := c.doRequest("PUT", reqStr, reqStr, nil, buffer)
 	if err != nil {
@@ -504,8 +607,23 @@ func (c *Client) uploadWorker(file *os.File, start, length, idx int, opath, uplo
 		fmt.Printf("ETag:%s != md5sum %s\n", ETag, md5sum)
 	}
 	part.ETag = ETag
-	part.PartNumber = idx
+	part.PartNumber = job.Idx
 	return
+}
+
+func (c *Client) uploadWorker(jobs chan muJob, finishes chan Multipart, endWorker chan int) {
+	var job muJob
+	for {
+		select {
+		case job = <-jobs:
+			part, _ := c.uploadDoWork(&job)
+			finishes <- part
+		case <-endWorker:
+			break
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 }
 
 func (c *Client) uploadPart(imur initMultipartUploadResult, opath, filepath string) (cmu CompleteMultipartUpload, err error) {
@@ -520,17 +638,41 @@ func (c *Client) uploadPart(imur initMultipartUploadResult, opath, filepath stri
 		return
 	}
 	file_len := int(fi.Size())
-	thread_num := (file_len + buffer_len - 1) / buffer_len
-	fmt.Printf("thread_num:%d\n", thread_num)
-	for i := 0; i < thread_num; i++ {
-		var part Multipart
-		if i == thread_num-1 {
+	jobs_num := (file_len + buffer_len - 1) / buffer_len
+	//fmt.Printf("jobs_num:%d\n", jobs_num)
+
+	jobs := make(chan muJob, jobs_num)
+	finishes := make(chan Multipart, jobs_num)
+	endWorker := make(chan int, c.ChanNum)
+	//start go
+	for i := 0; i < c.ChanNum; i++ {
+		go c.uploadWorker(jobs, finishes, endWorker)
+	}
+
+	//add job
+	for i := 0; i < jobs_num; i++ {
+		var job muJob
+		if i == jobs_num-1 {
 			last_len := file_len - buffer_len*i
-			part, err = c.uploadWorker(file, i*buffer_len, last_len, i+1, opath, imur.UploadId)
+			job = muJob{file, i * buffer_len, last_len, i + 1, opath, imur.UploadId}
 		} else {
-			part, err = c.uploadWorker(file, i*buffer_len, buffer_len, i+1, opath, imur.UploadId)
+			job = muJob{file, i * buffer_len, buffer_len, i + 1, opath, imur.UploadId}
 		}
+		jobs <- job
+	}
+
+	//get finished
+	for i := 0; i < jobs_num; i++ {
+		var part Multipart
+		part = <-finishes
 		cmu.Part = append(cmu.Part, part)
+	}
+	mps := multipartSorter{cmu.Part}
+	mps.Sort()
+	cmu.Part = mps.Parts
+	//end go
+	for i := 0; i < c.ChanNum; i++ {
+		endWorker <- i
 	}
 	return
 
@@ -546,6 +688,7 @@ func (c *Client) completeMultipartUpload(cmu CompleteMultipartUpload, opath, upl
 
 	buffer := new(bytes.Buffer)
 	buffer.Write(bs)
+	//fmt.Println(string(bs))
 
 	resp, err := c.doRequest("POST", reqStr, reqStr, nil, buffer)
 	if err != nil {
@@ -564,13 +707,14 @@ func (c *Client) completeMultipartUpload(cmu CompleteMultipartUpload, opath, upl
 	return
 }
 
+//Upload large object.
 func (c *Client) PutLargeObject(opath string, filepath string) (err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
 
 	imur, err := c.initMultipartUpload(opath)
-	fmt.Printf("%+v\n", imur)
+	//fmt.Printf("%+v\n", imur)
 	imu, err := c.uploadPart(imur, opath, filepath)
 	if err != nil {
 		fmt.Println(err)
@@ -582,7 +726,90 @@ func (c *Client) PutLargeObject(opath string, filepath string) (err error) {
 
 }
 
-func (c *Client) PostObjectGroup(cfg CreateFileGroup, opath string) (completefg CompleteFileGroup, err error) {
+//Abort multipart upload by its path and uploadID.
+func (c *Client) AbortMultipartUpload(opath, uploadId string) (err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	reqStr := opath + "?uploadId=" + uploadId
+	resp, err := c.doRequest("DELETE", reqStr, reqStr, nil, nil)
+	if err != nil {
+		return
+	}
+
+	if resp.StatusCode != 204 {
+		err = errors.New(resp.Status)
+		body, _ := ioutil.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		fmt.Println(string(body))
+	}
+	return
+}
+
+//List uncompleted multipart upload in a bucket which named bname.
+//The params is additional, it can be:"prefix","marker","delimiter","upload-id-marker","max-keys".
+//Return an object of ListMultipartUploadResult.
+func (c *Client) ListMultipartUpload(bname string, params map[string]string) (lmur ListMultipartUploadResult, err error) {
+	if strings.HasPrefix(bname, "/") == false {
+		bname = "/" + bname
+	}
+
+	reqStr := bname + "?uploads"
+	if params != nil {
+		for k, v := range params {
+			reqStr += "&" + k + "=" + v
+		}
+	}
+
+	resp, err := c.doRequest("GET", reqStr, reqStr, nil, nil)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	//fmt.Println(string(body))
+	err = xml.Unmarshal(body, &lmur)
+	return
+}
+
+//List uploaded parts for a multipart uploading.
+func (c *Client) ListParts(opath, uploadId string) (lpr ListPartsResult, err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	reqStr := opath + "?uploadId=" + uploadId
+	resp, err := c.doRequest("GET", reqStr, reqStr, nil, nil)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+
+	err = xml.Unmarshal(body, &lpr)
+	return
+}
+
+//Put the CreateFileGroup to the server.
+//The format of path is "/bucketName/objectGroupName".
+//Return an object of CompleteFileGroup.
+//Notice:objects and objectgroup should in the same bucket.
+func (c *Client) PostObjectGroup(cfg CreateFileGroup, gpath string) (completefg CompleteFileGroup, err error) {
 	//part := []GroupPart{{1, "11", "111"}, {2, "22", "222"}, {3, "33", "333"}}
 	//fg := CreateFileGroup{Part:part}
 	bs, err := xml.Marshal(cfg)
@@ -590,11 +817,11 @@ func (c *Client) PostObjectGroup(cfg CreateFileGroup, opath string) (completefg 
 		return
 	}
 
-	if strings.HasPrefix(opath, "/") == false {
-		opath = "/" + opath
+	if strings.HasPrefix(gpath, "/") == false {
+		gpath = "/" + gpath
 	}
 
-	reqStr := opath + "?group"
+	reqStr := gpath + "?group"
 	buffer := new(bytes.Buffer)
 	buffer.Write(bs)
 
@@ -615,12 +842,15 @@ func (c *Client) PostObjectGroup(cfg CreateFileGroup, opath string) (completefg 
 	return
 }
 
-func (c *Client) GetObjectGroupIndex(opath string) (fg FileGroup, err error) {
+//Get objectgroup's index by its path.
+//The format of path is "/bucketName/objectGroupName".
+//Return an object of FileGroup
+func (c *Client) GetObjectGroupIndex(gpath string) (fg FileGroup, err error) {
 	params := map[string]string{"x-oss-file-group": ""}
-	if strings.HasPrefix(opath, "/") == false {
-		opath = "/" + opath
+	if strings.HasPrefix(gpath, "/") == false {
+		gpath = "/" + gpath
 	}
-	resp, err := c.doRequest("GET", opath, "", params, nil)
+	resp, err := c.doRequest("GET", gpath, gpath, params, nil)
 	if err != nil {
 		return
 	}
@@ -638,16 +868,20 @@ func (c *Client) GetObjectGroupIndex(opath string) (fg FileGroup, err error) {
 	return
 }
 
-func (c *Client) GetObjectGroup(opath string, rangeStart, rangeEnd int) (obytes []byte, err error) {
-	return c.GetObject(opath, rangeStart, rangeEnd)
+//Get objectgroup by its path. The format of path is "/bucketName/objectGroupName".
+//The usage is the same as GetObject.
+func (c *Client) GetObjectGroup(gpath string, rangeStart, rangeEnd int) (obytes []byte, err error) {
+	return c.GetObject(gpath, rangeStart, rangeEnd)
 }
 
-func (c *Client) HeadObjectGroup(opath string) (header http.Header, err error) {
-	return c.HeadObject(opath)
+//Get objectgroup's meta information by its path. The format of path is "/bucketName/objectGroupName".
+func (c *Client) HeadObjectGroup(gpath string) (header http.Header, err error) {
+	return c.HeadObject(gpath)
 }
 
-func (c *Client) DeleteObjectGroup(bname string) (err error) {
-	return c.DeleteObject(bname)
+//Delete objectgroup by its path. The format of path is "/bucketName/objectGroupName".
+func (c *Client) DeleteObjectGroup(gpath string) (err error) {
+	return c.DeleteObject(gpath)
 }
 
 func newValSorter(m map[string]string) *valSorter {
@@ -678,4 +912,20 @@ func (vs *valSorter) Less(i, j int) bool {
 func (vs *valSorter) Swap(i, j int) {
 	vs.Vals[i], vs.Vals[j] = vs.Vals[j], vs.Vals[i]
 	vs.Keys[i], vs.Keys[j] = vs.Keys[j], vs.Keys[i]
+}
+
+func (ms *multipartSorter) Sort() {
+	sort.Sort(ms)
+}
+
+func (ms *multipartSorter) Len() int {
+	return len(ms.Parts)
+}
+
+func (ms *multipartSorter) Less(i, j int) bool {
+	return ms.Parts[i].PartNumber < ms.Parts[j].PartNumber
+}
+
+func (ms *multipartSorter) Swap(i, j int) {
+	ms.Parts[i], ms.Parts[j] = ms.Parts[j], ms.Parts[i]
 }
