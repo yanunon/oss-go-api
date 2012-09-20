@@ -220,7 +220,8 @@ func (c *Client) GetService() (lar ListAllMyBucketsResult, err error) {
 
 //Create a new bucket with a name.
 func (c *Client) PutBucket(bname string) (err error) {
-	resp, err := c.doRequest("PUT", "/"+bname, "/"+bname, nil, nil)
+	reqStr := "/" + bname
+	resp, err := c.doRequest("PUT", reqStr, reqStr, nil, nil)
 	if err != nil {
 		return
 	}
@@ -234,9 +235,11 @@ func (c *Client) PutBucket(bname string) (err error) {
 	return
 }
 
+//Set bucket access control list.
 func (c *Client) PutBucketACL(bname, acl string) (err error) {
 	params := map[string]string{"x-oss-acl": acl}
-	resp, err := c.doRequest("PUT", "/"+bname, "", params, nil)
+	reqStr := "/" + bname
+	resp, err := c.doRequest("PUT", reqStr, reqStr, params, nil)
 	if err != nil {
 		return
 	}
@@ -250,8 +253,10 @@ func (c *Client) PutBucketACL(bname, acl string) (err error) {
 	return
 }
 
+//Get bucket's object list.
 func (c *Client) GetBucket(bname, prefix, marker, delimiter, maxkeys string) (lbr ListBucketResult, err error) {
 	reqStr := "/" + bname
+	resStr := reqStr
 	query := map[string]string{}
 	if prefix != "" {
 		query["prefix"] = prefix
@@ -276,7 +281,7 @@ func (c *Client) GetBucket(bname, prefix, marker, delimiter, maxkeys string) (lb
 		}
 	}
 
-	resp, err := c.doRequest("GET", reqStr, "", nil, nil)
+	resp, err := c.doRequest("GET", reqStr, resStr, nil, nil)
 	if err != nil {
 		return
 	}
@@ -293,6 +298,7 @@ func (c *Client) GetBucket(bname, prefix, marker, delimiter, maxkeys string) (lb
 	return
 }
 
+//Get bucket's access control list.
 func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error) {
 	reqStr := "/" + bname + "?acl"
 	resp, err := c.doRequest("GET", reqStr, reqStr, nil, nil)
@@ -313,11 +319,13 @@ func (c *Client) GetBucketACL(bname string) (acl AccessControlPolicy, err error)
 	return
 }
 
+//Delete bucket by name.
 func (c *Client) DeleteBucket(bname string) (err error) {
 	return c.DeleteObject(bname)
 }
 
-func (c *Client) CopyObject(src, dst string) (err error) {
+//Copy object from path src to dst. The format of path is "/bucketName/objectName".
+func (c *Client) CopyObject(dst, src string) (err error) {
 	if strings.HasPrefix(src, "/") == false {
 		src = "/" + src
 	}
@@ -325,7 +333,7 @@ func (c *Client) CopyObject(src, dst string) (err error) {
 		dst = "/" + dst
 	}
 	params := map[string]string{"x-oss-copy-source": src}
-	resp, err := c.doRequest("PUT", dst, "", params, nil)
+	resp, err := c.doRequest("PUT", dst, dst, params, nil)
 	if err != nil {
 		return
 	}
@@ -339,11 +347,12 @@ func (c *Client) CopyObject(src, dst string) (err error) {
 	return
 }
 
+//Delete object by its path. The format of path is "/bucketName/objectName".
 func (c *Client) DeleteObject(opath string) (err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
-	resp, err := c.doRequest("DELETE", opath, "", nil, nil)
+	resp, err := c.doRequest("DELETE", opath, opath, nil, nil)
 	if err != nil {
 		return
 	}
@@ -357,8 +366,9 @@ func (c *Client) DeleteObject(opath string) (err error) {
 	return
 }
 
-//Download object in opath.
+//Download object by its path. The format of path is "/bucketName/objectName".
 //If rangeStart > -1 and rangeEnd > -1, download the object partially.
+//Return the object's byte array.
 func (c *Client) GetObject(opath string, rangeStart, rangeEnd int) (obytes []byte, err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
@@ -369,7 +379,7 @@ func (c *Client) GetObject(opath string, rangeStart, rangeEnd int) (obytes []byt
 		params["range"] = "bytes=" + strconv.Itoa(rangeStart) + "-" + strconv.Itoa(rangeEnd)
 	}
 
-	resp, err := c.doRequest("GET", opath, "", params, nil)
+	resp, err := c.doRequest("GET", opath, opath, params, nil)
 	if err != nil {
 		return
 	}
@@ -387,6 +397,7 @@ func (c *Client) GetObject(opath string, rangeStart, rangeEnd int) (obytes []byt
 	return
 }
 
+//Upload object by its remote path and local file path. The format of remote path is "/bucketName/objectName".
 func (c *Client) PutObject(opath string, filepath string) (err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
@@ -406,7 +417,7 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	params := map[string]string{}
 	params["Content-Type"] = contentType
 
-	resp, err := c.doRequest("PUT", opath, "", params, buffer)
+	resp, err := c.doRequest("PUT", opath, opath, params, buffer)
 	if err != nil {
 		return
 	}
@@ -419,9 +430,28 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 		fmt.Println(string(body))
 		return
 	}
-	fmt.Println(string(body))
 	return
+}
 
+func (c *Client) HeadObject(opath string) (header http.Header, err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+	resp, err := c.doRequest("HEAD", opath, "", nil, nil)
+	if err != nil {
+		return
+	}
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		return
+	}
+	header = resp.Header
+	return
+}
+
+func (c *Client) DeleteMultipleObject(bname string, onames []string) (err error) {
+	return
 }
 
 func (c *Client) initMultipartUpload(opath string) (imur initMultipartUploadResult, err error) {
@@ -550,27 +580,6 @@ func (c *Client) PutLargeObject(opath string, filepath string) (err error) {
 	_, err = c.completeMultipartUpload(imu, opath, imur.UploadId)
 	return
 
-}
-
-func (c *Client) HeadObject(opath string) (header http.Header, err error) {
-	if strings.HasPrefix(opath, "/") == false {
-		opath = "/" + opath
-	}
-	resp, err := c.doRequest("HEAD", opath, "", nil, nil)
-	if err != nil {
-		return
-	}
-
-	if resp.StatusCode != 200 {
-		err = errors.New(resp.Status)
-		return
-	}
-	header = resp.Header
-	return
-}
-
-func (c *Client) DeleteMultipleObject(bname string, onames []string) (err error) {
-	return
 }
 
 func (c *Client) PostObjectGroup(cfg CreateFileGroup, opath string) (completefg CompleteFileGroup, err error) {
