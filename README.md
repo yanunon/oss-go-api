@@ -1,4 +1,5 @@
-oss-go-api
-==========
+## Aliyun OSS API ##
 
-oss-go-api
+### Setup ###
+
+	go get -u github.com/yanunon/oss-go-api

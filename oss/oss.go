@@ -403,7 +403,7 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	io.Copy(buffer, fh)
 
 	contentType := http.DetectContentType(buffer.Bytes())
-	params := map[string]string {}
+	params := map[string]string{}
 	params["Content-Type"] = contentType
 
 	resp, err := c.doRequest("PUT", opath, "", params, buffer)
@@ -423,7 +423,6 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	return
 
 }
-
 
 func (c *Client) initMultipartUpload(opath string) (imur initMultipartUploadResult, err error) {
 	resp, err := c.doRequest("POST", opath+"?uploads", opath+"?uploads", nil, nil)
@@ -478,7 +477,6 @@ func (c *Client) uploadWorker(file *os.File, start, length, idx int, opath, uplo
 	part.PartNumber = idx
 	return
 }
-
 
 func (c *Client) uploadPart(imur initMultipartUploadResult, opath, filepath string) (cmu CompleteMultipartUpload, err error) {
 	file, err := os.Open(filepath)
