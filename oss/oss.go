@@ -141,6 +141,7 @@ type ListBucketResult struct {
 	Name        string
 	Prefix      string
 	Marker      string
+	NextMarker  string
 	MaxKeys     int
 	Delimiter   string
 	IsTruncated bool
