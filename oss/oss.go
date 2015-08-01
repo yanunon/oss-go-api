@@ -42,6 +42,7 @@ import (
 	"hash"
 	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"sort"
@@ -506,6 +507,35 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 		return
 	}
 	return
+}
+
+func (c *Client) PutObjectWithFile(opath string, file multipart.File) (err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	buffer := new(bytes.Buffer)
+	io.Copy(buffer, file)
+
+	contentType := http.DetectContentType(buffer.Bytes())
+	params := map[string]string{}
+	params["Content-Type"] = contentType
+
+	resp, err := c.doRequest("PUT", opath, opath, params, buffer)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	return
+
 }
 
 //Get object's meta information by its path. The format of remote path is "/bucketName/objectName".
