@@ -42,7 +42,6 @@ import (
 	"hash"
 	"io"
 	"io/ioutil"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"sort"
@@ -509,7 +508,7 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	return
 }
 
-func (c *Client) PutObjectWithFile(opath string, file multipart.File) (err error) {
+func (c *Client) PutObjectWithFile(opath string, file io.Reader) (err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
