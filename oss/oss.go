@@ -508,7 +508,7 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	return
 }
 
-func (c *Client) PutObjectWithFile(opath string, file io.Reader, params map[string]interface{}) (err error) {
+func (c *Client) PutObjectWithFile(opath string, file io.Reader, params map[string]string) (err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
