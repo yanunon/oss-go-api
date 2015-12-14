@@ -508,7 +508,7 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	return
 }
 
-func (c *Client) PutObjectWithFile(opath string, file io.Reader) (err error) {
+func (c *Client) PutObjectWithFile(opath string, file io.Reader, params map[string]interface{}) (err error) {
 	if strings.HasPrefix(opath, "/") == false {
 		opath = "/" + opath
 	}
@@ -516,9 +516,11 @@ func (c *Client) PutObjectWithFile(opath string, file io.Reader) (err error) {
 	buffer := new(bytes.Buffer)
 	io.Copy(buffer, file)
 
-	contentType := http.DetectContentType(buffer.Bytes())
-	params := map[string]string{}
-	params["Content-Type"] = contentType
+	if params == nil {
+		params = map[string]string{}
+		contentType := http.DetectContentType(buffer.Bytes())
+		params["Content-Type"] = contentType
+	}
 
 	resp, err := c.doRequest("PUT", opath, opath, params, buffer)
 	if err != nil {
