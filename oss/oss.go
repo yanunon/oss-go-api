@@ -508,6 +508,37 @@ func (c *Client) PutObject(opath string, filepath string) (err error) {
 	return
 }
 
+func (c *Client) PutObjectWithFile(opath string, file io.Reader, params map[string]interface{}) (err error) {
+	if strings.HasPrefix(opath, "/") == false {
+		opath = "/" + opath
+	}
+
+	buffer := new(bytes.Buffer)
+	io.Copy(buffer, file)
+
+	if params == nil {
+		params = map[string]string{}
+		contentType := http.DetectContentType(buffer.Bytes())
+		params["Content-Type"] = contentType
+	}
+
+	resp, err := c.doRequest("PUT", opath, opath, params, buffer)
+	if err != nil {
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = errors.New(resp.Status)
+		fmt.Println(string(body))
+		return
+	}
+	return
+
+}
+
 //Get object's meta information by its path. The format of remote path is "/bucketName/objectName".
 func (c *Client) HeadObject(opath string) (header http.Header, err error) {
 	if strings.HasPrefix(opath, "/") == false {
